@@ -2,7 +2,8 @@ const { PrismaClient } = require('@prisma/client');
 const { generateAndStoreOtp, verifyOtp: verifyOtpUtil } = require('../utils/otp'); // fixed naming collision
 const bcrypt = require('bcrypt');
 const notificationProducer = require('../kalfta/producer/notification.producer'); // fixed: wrong path
-
+const { generateAccessToken, generateRefreshToken } = require('../utils/auth');
+const { redis } = require('../config/redis');
 const prisma = new PrismaClient();
 
 const sendOtp = async ({ firstName, lastName, email, password }) => {
@@ -35,7 +36,7 @@ const verifyOtp = async ({ otp, otpSessionId }) => {
     if (!verification) {
         throw new Error('Invalid or expired OTP');
     }
-    
+
     const { meta, email } = verification;
     const user = await prisma.user.create({
         data: {
@@ -51,6 +52,33 @@ const verifyOtp = async ({ otp, otpSessionId }) => {
 };
 
 
+const login = async ({ email, password, deviceId }) => {
+    const existingUser = await prisma.user.findUnique({
+        where: { email }
+    });
+    if (!existingUser) {
+        throw new Error("User not found");
+    }
+
+    const doesPasswordMatch = await bcrypt.compare(password, existingUser.password);
+    if (!doesPasswordMatch) {
+        throw new Error("Invalid password");
+    }
+
+    const accessToken = generateAccessToken(existingUser.id);
+    const { token: refreshToken, jti } = generateRefreshToken(existingUser.id);
+
+    const ttlSeconds = parseInt(process.env.REFRESH_TOKEN_TTL_SEC) || 604800;
+
+    await redis.set(`refresh:${existingUser.id}:${deviceId}`, jti, 'EX', ttlSeconds);
+
+    const { password: _password, ...safeUser } = existingUser;
+    await redis.set(`user:${existingUser.id}`, JSON.stringify(safeUser), 'EX', ttlSeconds);
+
+    return { accessToken, refreshToken, user: safeUser };
+};
 
 
-module.exports = { sendOtp, verifyOtp }; // fixed: verifyOtp added to exports
+
+
+module.exports = { sendOtp, verifyOtp, login }; // fixed: verifyOtp added to exports

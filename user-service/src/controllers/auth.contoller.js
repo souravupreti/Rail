@@ -1,5 +1,5 @@
 const authService = require('../services/auth.service');
-
+const getDeviceFingerprint = require('../utils/device');
 const cookieOptions = (maxAgeMs) => ({
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -45,8 +45,8 @@ exports.verifyOtp = async (req, res) => {
         const user = await authService.verifyOtp({ otp, otpSessionId });
 
         res.clearCookie('otpSessionId');
-        res.status(200).json({ 
-            success: true, 
+        res.status(200).json({
+            success: true,
             message: 'OTP verified successfully and user registered',
             data: {
                 id: user.id,
@@ -61,5 +61,34 @@ exports.verifyOtp = async (req, res) => {
             return res.status(400).json({ success: false, message: error.message });
         }
         res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+
+
+exports.login = async (req, res, next) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ message: 'All fields are required' });
+        }
+        const deviceId = getDeviceFingerprint(req);
+        const { accessToken, refreshToken, user } = await authService.login({ email, password, deviceId });
+
+        const accessTokenMaxAge = (parseInt(process.env.ACCESS_TOKEN_TTL_SEC) || 900) * 1000;
+        const refreshTokenMaxAge = (parseInt(process.env.REFRESH_TOKEN_TTL_SEC) || 604800) * 1000;
+
+        res.cookie("accessToken", accessToken, cookieOptions(accessTokenMaxAge));
+        res.cookie("refreshToken", refreshToken, cookieOptions(refreshTokenMaxAge))
+            .status(200).json({
+                success: true,
+                message: "Logged in successfully",
+                loggedInUser: user
+            })
+    } catch (error) {
+        if (error.message.includes('not found') || error.message.includes('Invalid password') || error.message.includes('mismatch')) {
+            return res.status(401).json({ success: false, message: error.message });
+        }
+        next(error);
     }
 };
