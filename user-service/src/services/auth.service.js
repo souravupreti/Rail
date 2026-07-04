@@ -4,7 +4,10 @@ const bcrypt = require('bcrypt');
 const notificationProducer = require('../kalfta/producer/notification.producer'); // fixed: wrong path
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/auth');
 const { redis } = require('../config/redis');
+const { OAuth2Client } = require('google-auth-library');
+
 const prisma = new PrismaClient();
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const sendOtp = async ({ firstName, lastName, email, password }) => {
     const existingUser = await prisma.user.findUnique({  // fixed: prisme → prisma
@@ -94,18 +97,94 @@ const rotateRefreshToken = async ({ refreshToken, deviceId }) => {
     const { token: newRefreshToken, jti: newJti } = generateRefreshToken(userId);
     const ttlSeconds = parseInt(process.env.REFRESH_TOKEN_TTL_SEC) || 604800;
     await redis.set(`refresh:${userId}:${deviceId}`, newJti, 'EX', ttlSeconds);
-    
+
     const existingUser = await prisma.user.findUnique({ where: { id: userId } });
     if (!existingUser) {
         throw new Error("User not found");
     }
     const { password: _password, ...safeUser } = existingUser;
-    
+
     await redis.set(`user:${userId}`, JSON.stringify(safeUser), 'EX', ttlSeconds);
     return { accessToken, refreshToken: newRefreshToken, user: safeUser };
 };
 
 
 
+const verifyGoogleIdToken = async ({ idToken, deviceId }) => {
+    const ticket = await googleClient.verifyIdToken({
+        idToken,
+        audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload.sub || !payload.email) {
+        throw new Error("Invalid Google ID token");
+    }
 
-module.exports = { sendOtp, verifyOtp, login, rotateRefreshToken };
+    const googleUser = {
+        provider: "google",
+        providerId: payload.sub,
+        email: payload.email,
+        firstName: payload.given_name || "",
+        lastName: payload.family_name || "",
+        emailVerified: payload.email_verified || false
+    };
+
+    const user = await prisma.$transaction(async (tx) => {
+        let googleAuth = await tx.authProvider.findUnique({
+            where: {
+                provider_providerId: {
+                    provider: googleUser.provider,
+                    providerId: googleUser.providerId
+                }
+            },
+            include: { user: true }
+        });
+        if (googleAuth) {
+            return googleAuth.user;
+        }
+
+        let existingUser = await tx.user.findUnique({
+            where: { email: googleUser.email }
+        });
+
+        if (existingUser) {
+            await tx.authProvider.create({
+                data: {
+                    provider: googleUser.provider,
+                    providerId: googleUser.providerId,
+                    userId: existingUser.id
+                }
+            });
+            return existingUser;
+        }
+
+        return await tx.user.create({
+            data: {
+                email: googleUser.email,
+                firstName: googleUser.firstName,
+                lastName: googleUser.lastName,
+                emailVerified: googleUser.emailVerified,
+                authProviders: {
+                    create: {
+                        provider: googleUser.provider,
+                        providerId: googleUser.providerId
+                    }
+                }
+            }
+        });
+    });
+
+    const accessToken = generateAccessToken(user.id);
+    const { token: refreshToken, jti } = generateRefreshToken(user.id);
+    const ttlSeconds = parseInt(process.env.REFRESH_TOKEN_TTL_SEC) || 604800;
+    await redis.set(`refresh:${user.id}:${deviceId}`, jti, 'EX', ttlSeconds);
+    const { password: _password, ...safeUser } = user;
+    await redis.set(`user:${user.id}`, JSON.stringify(safeUser), 'EX', ttlSeconds);
+    
+    return { accessToken, refreshToken, user: safeUser };
+};
+
+
+
+
+module.exports = { sendOtp, verifyOtp, login, rotateRefreshToken, verifyGoogleIdToken };

@@ -124,3 +124,31 @@ exports.rotateRefreshToken = async (req, res, next) => {
         next(error);
     }
 }
+
+
+exports.verifyGoogleIdToken = async (req, res, next) => {
+    try {
+        const { idToken } = req.body;
+        if (!idToken) {
+            return res.status(400).json({ success: false, message: 'ID token not found' });
+        }
+        const deviceId = getDeviceFingerprint(req);
+        const { accessToken, refreshToken, user } = await authService.verifyGoogleIdToken({ idToken, deviceId });
+
+        const accessTokenMaxAge = (parseInt(process.env.ACCESS_TOKEN_TTL_SEC) || 900) * 1000;
+        const refreshTokenMaxAge = (parseInt(process.env.REFRESH_TOKEN_TTL_SEC) || 604800) * 1000;
+
+        res.cookie("accessToken", accessToken, cookieOptions(accessTokenMaxAge));
+        res.cookie("refreshToken", refreshToken, cookieOptions(refreshTokenMaxAge))
+        res.status(200).json({
+            success: true,
+            message: "Google ID token verified successfully",
+            loggedInUser: user
+        })
+    } catch (error) {
+        if (error.message.includes('not found') || error.message.includes('Invalid password') || error.message.includes('mismatch')) {
+            return res.status(401).json({ success: false, message: error.message });
+        }
+        next(error);
+    }
+}
