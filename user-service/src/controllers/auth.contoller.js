@@ -21,7 +21,8 @@ exports.sendOtp = async (req, res, next) => {
 
         const { otpSessionId } = await authService.sendOtp({ firstName, lastName, email, password }); // fixed: 3-s typo
 
-        res.cookie('otpSessionId', otpSessionId, cookieOptions(process.env.OTP_TTL * 1000)) // fixed: cookieOptions now defined
+        const otpTtl = (parseInt(process.env.OTP_TTL) || 300) * 1000;
+        res.cookie('otpSessionId', otpSessionId, cookieOptions(otpTtl)) // fixed: cookieOptions now defined
             .status(200)
             .json({
                 success: true,          // fixed: "sucess" typo
@@ -92,3 +93,34 @@ exports.login = async (req, res, next) => {
         next(error);
     }
 };
+
+
+
+exports.rotateRefreshToken = async (req, res, next) => {
+
+    try {
+
+        const { refreshToken } = req.cookies;
+        if (!refreshToken) {
+            return res.status(401).json({ success: false, message: 'Refresh token not found' });
+        }
+        const deviceId = getDeviceFingerprint(req);
+        const { accessToken, refreshToken: newRefreshToken, user } = await authService.rotateRefreshToken({ refreshToken, deviceId });
+
+        const accessTokenMaxAge = (parseInt(process.env.ACCESS_TOKEN_TTL_SEC) || 900) * 1000;
+        const refreshTokenMaxAge = (parseInt(process.env.REFRESH_TOKEN_TTL_SEC) || 604800) * 1000;
+
+        res.cookie("accessToken", accessToken, cookieOptions(accessTokenMaxAge));
+        res.cookie("refreshToken", newRefreshToken, cookieOptions(refreshTokenMaxAge))
+            .status(200).json({
+                success: true,
+                message: "Refresh token rotated successfully",
+                loggedInUser: user
+            })
+    } catch (error) {
+        if (error.message.includes('not found') || error.message.includes('Invalid password') || error.message.includes('mismatch')) {
+            return res.status(401).json({ success: false, message: error.message });
+        }
+        next(error);
+    }
+}

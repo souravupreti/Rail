@@ -11,4 +11,12 @@ const generateRefreshToken = (userId) => {
     return { token, jti };
 };
 
-module.exports = { generateAccessToken, generateRefreshToken };
+const verifyRefreshToken = (token) => {
+    try {
+        return jwt.verify(token, process.env.JWT_SECRET);
+    } catch (error) {
+        return null;
+    }
+};
+
+module.exports = { generateAccessToken, generateRefreshToken, verifyRefreshToken };
